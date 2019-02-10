@@ -1,3 +1,7 @@
+drop database tong_test;
+create database tong_test;
+use tong_test;
+
 SET GLOBAL group_concat_max_len=100000;
 
 -- custom functions
@@ -59,7 +63,7 @@ CREATE TABLE device (
   name varchar(255) NOT NULL,
   json_data text,
   PRIMARY KEY (uuid_bin, version),
-  INDEX (name),
+  UNIQUE (name, version),
   INDEX (start_sid, end_sid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 
@@ -73,9 +77,8 @@ CREATE TABLE physical_interface (
   parent_uuid binary(16) NOT NULL,
   json_data text,
   PRIMARY KEY (uuid_bin, version),
-  INDEX (name),
+  UNIQUE (name, version),
   INDEX (start_sid, end_sid),
-  INDEX (parent_uuid),
   FOREIGN KEY (parent_uuid)
     REFERENCES device(uuid_bin)
     ON DELETE CASCADE
@@ -90,7 +93,7 @@ CREATE TABLE image (
   name varchar(255) NOT NULL,
   json_data text,
   PRIMARY KEY (uuid_bin, version),
-  INDEX (name),
+  UNIQUE (name, version),
   INDEX (start_sid, end_sid)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 
@@ -103,8 +106,19 @@ BEGIN
 END$$
 DELIMITER ;
 
--- CRUD stored procedures for device 
+-- CRUD stored procedures for device
 DELIMITER $$
+DROP PROCEDURE IF EXISTS debug$$
+
+CREATE PROCEDURE debug(var VARCHAR(255), msg VARCHAR(255))
+BEGIN
+  select concat(concat(var, '='), msg) AS '** DEBUG:';
+END$$
+DELIMITER ;
+
+DELIMITER $$
+DROP PROCEDURE IF EXISTS createDevice$$
+
 CREATE PROCEDURE createDevice (in deviceName varchar(255), in deviceJson text, out uuidText varchar(36))
 BEGIN
   declare uuidBin binary(16);
@@ -117,8 +131,49 @@ BEGIN
 END$$
 DELIMITER ;
 
+DELIMITER $$
+DROP PROCEDURE IF EXISTS updateDevice$$
+
+CREATE PROCEDURE updateDevice (in deviceName varchar(255), in deviceJson text)
+BEGIN
+  declare uuidBin binary(16);
+  declare ver int;
+  declare startSid int;
+  declare currentSid int;
+
+  set uuidBin = NULL;
+  set ver = NULL;
+  set startSid = NULL;
+  set currentSid = currentSID();
+
+  -- find the latest object version first
+  select uuid_bin, version, start_sid into uuidBin, ver, startSid from device
+    where name = deviceName COLLATE utf8_unicode_ci and end_sid = 4294967295 limit 1;
+
+  if (uuidBin is not NULL and ver is not NULL) then
+    -- found the latest version
+    if (startSid < currentSid) then
+      -- db snapshot created after this latest version, so need to change the end_sid
+      -- of this latest version to make it older version and insert a new version
+      update device set end_sid = currentSid
+        where uuid_bin = uuidBin and version = ver;
+      insert into device(uuid_bin, uuid_text, version, start_sid, name, json_data)
+        values (uuidBin, orderedBinUUIDToText(uuidBin), ver+1, currentSid, deviceName, deviceJson);
+    else
+      -- no db snapshot created after this latest version, so let's do in-place update
+      update device set json_data = deviceJson
+        where uuid_bin = uuidBin and version = ver;
+    end if;
+  else
+    call debug("null uuid_bin", "null version");
+  end if;
+END$$
+DELIMITER ;
+
 -- CRUD stored procedures for physical_interface
 DELIMITER $$
+DROP PROCEDURE IF EXISTS createPhysicalInterface$$
+
 CREATE PROCEDURE createPhysicalInterface (in deviceName varchar(255), in interfaceName varchar(255), in interfaceJson text, out uuidText varchar(36))
 BEGIN
   declare uuidBin binary(16);
@@ -126,34 +181,23 @@ BEGIN
 
   set uuidText = uuid();
   set uuidBin = toOrderedBinUUID(uuidText);
-  select uuid_bin into parentUuid from device where name = deviceName COLLATE utf8_unicode_ci and end_sid = 4294967295 limit 1;
 
-  insert into physical_interface(uuid_bin, uuid_text, start_sid, name, parent_uuid, json_data)
-    values (uuidBin, uuidText, currentSID(), interfaceName, parentUuid, interfaceJson);
+  select uuid_bin into parentUuid from device where name = deviceName COLLATE utf8_unicode_ci and end_sid = 4294967295 limit 1;
+  if parentUuid is not NULL then
+    insert into physical_interface(uuid_bin, uuid_text, start_sid, name, parent_uuid, json_data)
+      values (uuidBin, uuidText, currentSID(), interfaceName, parentUuid, interfaceJson);
+  end if;
 END$$
 DELIMITER ;
 
 -- CRUD stored procedures for image
 DELIMITER $$
-CREATE PROCEDURE createImage (in imageName varchar(255), in imageData text, out uuidText varchar(36))
+DROP PROCEDURE IF EXISTS createImage$$
+
+CREATE PROCEDURE createImage (
+  in imageName varchar(255), in imageData text, out uuidText varchar(36))
 BEGIN
   declare uuidBin binary(16);
-  declare parentUuid binary(16);
-
-  set uuidText = uuid();
-  set uuidBin = toOrderedBinUUID(uuidText);
-
-  insert into image(uuid_bin, uuid_text, start_sid, name, json_data)
-    values (uuidBin, uuidText, currentSID(), imageName, imageData);
-END$$
-DELIMITER ;
-
--- CRUD stored procedures for query device
-DELIMITER $$
-CREATE PROCEDURE getDeviceByUuid (in devId varchar(36), in imageData text, out uuidText varchar(36))
-BEGIN
-  declare uuidBin binary(16);
-  declare parentUuid binary(16);
 
   set uuidText = uuid();
   set uuidBin = toOrderedBinUUID(uuidText);
@@ -176,6 +220,9 @@ select @pi_uuid;
 set @img_uuid = NULL;
 call createImage('img-1', '{"name": "img-1"}', @img_uuid);
 select @img_uuid;
+
+call updateDevice('dev-1', '{"name": "dev-1", "description": "first modification"}');
+call updateDevice('dev-1', '{"name": "dev-1", "description": "second modification"}');
 
 select * from dm_snapshot;
 select * from device;

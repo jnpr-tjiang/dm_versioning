@@ -170,6 +170,57 @@ BEGIN
 END$$
 DELIMITER ;
 
+DELIMITER $$
+DROP PROCEDURE IF EXISTS deleteDevice$$
+
+CREATE PROCEDURE deleteDevice (in deviceName varchar(255))
+BEGIN
+  declare uuidBin binary(16);
+  declare ver int;
+  declare startSid int;
+  declare currentSid int;
+
+  set uuidBin = NULL;
+  set ver = NULL;
+  set startSid = NULL;
+  set currentSid = currentSID();
+
+  -- find the latest object version first
+  select uuid_bin, version, start_sid into uuidBin, ver, startSid from device
+    where name = deviceName COLLATE utf8_unicode_ci and end_sid = 4294967295 limit 1;
+
+  if (uuidBin is not NULL and ver is not NULL) then
+    -- found the latest version
+    if (startSid < currentSid) then
+      -- db snapshot created after this latest version, so need to change the end_sid
+      -- of this latest version to make it older version
+      update device set end_sid = currentSid
+        where uuid_bin = uuidBin and version = ver;
+    else
+      -- no db snapshot created after this latest version, so let's delete the record
+      delete from device where uuid_bin = uuidBin and version = ver;
+    end if;
+  else
+    call debug("null uuid_bin", "null version");
+  end if;
+END$$
+DELIMITER ;
+
+DELIMITER $$
+DROP PROCEDURE IF EXISTS getDeviceByName$$
+
+CREATE PROCEDURE getDeviceByName (in deviceName varchar(255), in sid int, out deviceJson text)
+BEGIN
+  if sid is NULL then
+    select json_data into deviceJson from device
+      where name = deviceName COLLATE utf8_unicode_ci and sid = 4294967295 limit 1;
+  else
+    select json_data into deviceJson from device
+      where name = deviceName COLLATE utf8_unicode_ci and sid <= start_sid and sid < end_sid limit 1;
+  end if;
+END$$
+DELIMITER ;
+
 -- CRUD stored procedures for physical_interface
 DELIMITER $$
 DROP PROCEDURE IF EXISTS createPhysicalInterface$$
@@ -211,7 +262,11 @@ DELIMITER ;
 set @dev_uuid = NULL;
 call createDevice('dev-1', '{"name": "dev-1"}', @dev_uuid);
 call createSnapshot("right after creating dev-1");
-select @dev_uuid;
+set @dev_json = NULL;
+call getDeviceByName('dev-1', NULL, @dev_json);
+select @dev_json;
+call getDeviceByName('dev-1', 1, @dev_json);
+select @dev_json;
 
 set @pi_uuid = NULL;
 call createPhysicalInterface('dev-1', 'ge-0/0/0', '{"name": "ge-0/0/0"}', @pi_uuid);

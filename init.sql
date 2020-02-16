@@ -1,5 +1,7 @@
-drop database tong_test;
-create database tong_test;
+drop database if exists tong_test;
+create database tong_test
+  character set utf8
+  collate utf8_unicode_ci;
 use tong_test;
 
 SET GLOBAL group_concat_max_len=100000;

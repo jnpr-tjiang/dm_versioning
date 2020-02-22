@@ -215,7 +215,7 @@ CREATE PROCEDURE getDeviceByName (in deviceName varchar(255), in sid int, out de
 BEGIN
   if sid is NULL then
     select json_data into deviceJson from device
-      where name = deviceName COLLATE utf8_unicode_ci and sid = 4294967295 limit 1;
+    where name = deviceName COLLATE utf8_unicode_ci and end_sid = 4294967295 limit 1;
   else
     select json_data into deviceJson from device
       where name = deviceName COLLATE utf8_unicode_ci and sid <= start_sid and sid < end_sid limit 1;
